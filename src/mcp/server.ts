@@ -3,6 +3,7 @@ import type { MacroFactorClient } from '../lib/api/index.js';
 import { registerFoodTools } from './tools/food.js';
 import { registerNutritionTools } from './tools/nutrition.js';
 import { registerProfileTools } from './tools/profile.js';
+import { registerRecipeTools } from './tools/recipe.js';
 import { registerWeightTools } from './tools/weight.js';
 import { registerWorkoutTools } from './tools/workout.js';
 
@@ -15,6 +16,7 @@ export function createServer(client: MacroFactorClient): McpServer {
   registerProfileTools(server, client);
   registerFoodTools(server, client);
   registerNutritionTools(server, client);
+  registerRecipeTools(server, client);
   registerWeightTools(server, client);
   registerWorkoutTools(server, client);
 

@@ -108,7 +108,14 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
       let gramMode = true;
 
       if (amount != null && unit) {
-        serving = findServing(food.servings, unit) ?? food.servings[0];
+        const matched = findServing(food.servings, unit);
+        if (!matched) {
+          const available = food.servings.map((s) => s.description).join(', ');
+          throw new Error(
+            `No "${unit}" serving found for "${food.name}". Available servings: ${available}. Use grams instead or pick an available unit.`
+          );
+        }
+        serving = matched;
         quantity = amount;
         gramMode = isGramServing(serving);
       } else if (grams != null) {
@@ -145,6 +152,7 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
       protein: z.number().min(0),
       carbs: z.number().min(0),
       fat: z.number().min(0),
+      imageId: z.string().optional(),
       date: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -153,9 +161,9 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
       minute: z.number().int().min(0).max(59).optional(),
     },
     { destructiveHint: false },
-    async ({ name, calories, protein, carbs, fat, date, hour, minute }) => {
+    async ({ name, calories, protein, carbs, fat, imageId, date, hour, minute }) => {
       const logTime = parseLogTime({ date, hour, minute });
-      await client.logFood(logTime, name, calories, protein, carbs, fat);
+      await client.logFood(logTime, name, calories, protein, carbs, fat, imageId);
       await syncDayDashboard(client, logTime.date);
       return {
         content: [
@@ -186,6 +194,29 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
       return {
         content: [
           { type: 'text' as const, text: JSON.stringify({ status: 'updated', date, entryId, quantity }, null, 2) },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'update_food_time',
+    `Update the logged time (hour and minute) of an existing food entry without changing any other fields. Use this when an entry was scanned or logged at the wrong time of day — for example, scanning a lunch item in the morning. Do not use this to change the date; delete and re-log for a different date. Prerequisite: call get_food_log to get the entryId. Multiple entries (e.g., all items in a meal) can be updated by calling this tool once per entry.`,
+    {
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      entryId: z.string().min(1),
+      hour: z.number().int().min(0).max(23),
+      minute: z.number().int().min(0).max(59),
+    },
+    { destructiveHint: false },
+    async ({ date, entryId, hour, minute }) => {
+      await client.updateFoodEntryTime(date, entryId, hour, minute);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ status: 'updated', date, entryId, hour, minute }, null, 2),
+          },
         ],
       };
     }

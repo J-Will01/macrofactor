@@ -3,7 +3,9 @@ import type { SearchFoodResult, FoodServing } from './types';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const _env = typeof (import.meta as any)?.env === 'object' ? (import.meta as any).env : {};
 function getTypesenseHost(): string {
-  return _env.VITE_TYPESENSE_HOST ?? process.env.TYPESENSE_HOST ?? '';
+  const host = _env.VITE_TYPESENSE_HOST ?? process.env.TYPESENSE_HOST ?? '';
+  if (host && !host.startsWith('http')) return `https://${host}`;
+  return host;
 }
 function getTypesenseApiKey(): string {
   return _env.VITE_TYPESENSE_API_KEY ?? process.env.TYPESENSE_API_KEY ?? '';

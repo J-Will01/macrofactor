@@ -1,4 +1,4 @@
-import type { Goals, ScaleEntry, NutritionSummary, StepEntry, SearchFoodResult, FoodServing } from './types';
+import type { Goals, ScaleEntry, NutritionSummary, StepEntry, SearchFoodResult, FoodServing, Recipe, RecipeIngredient, RecipeInput } from './types';
 import { FoodEntry } from './types';
 import { signIn, refreshIdToken, getUserIdFromToken } from './auth';
 import {
@@ -481,7 +481,8 @@ export class MacroFactorClient {
     calories: number,
     protein: number,
     carbs: number,
-    fat: number
+    fat: number,
+    imageId?: string
   ): Promise<string> {
     const token = await this.ensureToken();
     const dateStr = loggedAt.date;
@@ -511,7 +512,7 @@ export class MacroFactorClient {
       ef: nfv(),
       m: servingsArray([defaultServing]),
       id: sfv(entryId),
-      x: sfv('229'), // default food icon
+      x: sfv(imageId ?? '229'),
     };
     await patchFoodDocument(`users/${this.uid}/food/${dateStr}`, entryId, fields, token);
     return entryId;
@@ -604,6 +605,17 @@ export class MacroFactorClient {
     // Use per-subfield update to avoid wiping the entry.
     // q is always 1 (serving count); y is the user quantity.
     await updateFoodEntryFields(`users/${this.uid}/food/${date}`, entryId, { y: sfv(qty), ua: sfv(nowMicros) }, token);
+  }
+
+  async updateFoodEntryTime(date: string, entryId: string, hour: number, minute: number): Promise<void> {
+    const token = await this.ensureToken();
+    const nowMicros = String(Date.now() * 1000);
+    await updateFoodEntryFields(
+      `users/${this.uid}/food/${date}`,
+      entryId,
+      { h: sfv(String(hour)), mi: sfv(String(minute)), ua: sfv(nowMicros) },
+      token
+    );
   }
 
   /**
@@ -1168,6 +1180,193 @@ export class MacroFactorClient {
     const token = await this.ensureToken();
     await patchDocument(`users/${this.uid}/profiles/workout`, { activeProgramId: id }, ['activeProgramId'], token);
   }
+  // -------------------------------------------------------------------------
+  // Recipes (stored in customFoods collection, o === true)
+  // -------------------------------------------------------------------------
+
+  private parseRecipeDocument(d: Record<string, any>): Recipe { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const totalServings = Number(d.q) || 1;
+    const totalCal = Number(d.c) || 0;
+    const totalProtein = Number(d.p) || 0;
+    const totalCarbs = Number(d.e) || 0;
+    const totalFat = Number(d.f) || 0;
+    const ingredients: RecipeIngredient[] = ((d.r ?? []) as Record<string, any>[]).map((ing) => ({ // eslint-disable-line @typescript-eslint/no-explicit-any
+      foodId: String(ing.id || ''),
+      name: String(ing.t || ''),
+      quantity: Number(ing.y) || 1,
+      unit: String(ing.u || ing.s || 'serving'),
+      calories: Number(ing.c) || 0,
+      protein: Number(ing.p) || 0,
+      carbs: Number(ing.e) || 0,
+      fat: Number(ing.f) || 0,
+    }));
+    return {
+      id: String(d.id || ''),
+      name: String(d.t || ''),
+      description: d.nt ? String(d.nt) : undefined,
+      sourceUrl: d.li ? String(d.li) : undefined,
+      imageUrl: d.l ? String(d.l) : undefined,
+      servings: totalServings,
+      caloriesPerServing: totalCal / totalServings,
+      proteinPerServing: totalProtein / totalServings,
+      carbsPerServing: totalCarbs / totalServings,
+      fatPerServing: totalFat / totalServings,
+      ingredients,
+      steps: Array.isArray(d.st) ? (d.st as unknown[]).map(String) : [],
+    };
+  }
+
+  async getRecipes(): Promise<Recipe[]> {
+    const token = await this.ensureToken();
+    const docs = await listDocuments(`users/${this.uid}/customFoods`, token);
+    return docs
+      .map((doc) => parseDocument(doc))
+      .filter((d) => d.o === true)
+      .map((d) => this.parseRecipeDocument(d));
+  }
+
+  async getRecipe(id: string): Promise<Recipe | null> {
+    const token = await this.ensureToken();
+    const doc = await getDocument(`users/${this.uid}/customFoods/${id}`, token);
+    const d = parseDocument(doc);
+    if (!d.o) return null;
+    return this.parseRecipeDocument(d);
+  }
+
+  async logRecipe(logTime: LogTime, recipeId: string, servings: number): Promise<string> {
+    const token = await this.ensureToken();
+    const doc = await getDocument(`users/${this.uid}/customFoods/${recipeId}`, token);
+    const d = parseDocument(doc);
+    if (!d.o) throw new Error(`customFood ${recipeId} is not a recipe`);
+
+    const recipe = this.parseRecipeDocument(d);
+    const entryId = String(Date.now() * 1000);
+    const nowMicros = String(Date.now() * 1000);
+
+    const fields: Record<string, FoodFieldValue> = {
+      t: sfv(recipe.name),
+      b: sfv('Custom Recipe'),
+      id: sfv(recipeId),
+      c: sfv(recipe.caloriesPerServing),
+      p: sfv(recipe.proteinPerServing),
+      e: sfv(recipe.carbsPerServing),
+      f: sfv(recipe.fatPerServing),
+      g: sfv(1),
+      w: sfv(1),
+      y: sfv(servings),
+      q: sfv(1),
+      s: sfv('serving'),
+      u: sfv('serving'),
+      h: sfv(String(logTime.hour)),
+      mi: sfv(String(logTime.minute)),
+      k: sfv('n'),
+      x: sfv(''),
+      ca: sfv(nowMicros),
+      ua: sfv(nowMicros),
+      o: bfv(false),
+      fav: bfv(false),
+      ef: nfv(),
+      m: servingsArray([{ description: 'serving', gramWeight: 1, amount: 1 }]),
+    };
+
+    await patchFoodDocument(`users/${this.uid}/food/${logTime.date}`, entryId, fields, token);
+    return entryId;
+  }
+
+  async deleteRecipe(id: string): Promise<void> {
+    const token = await this.ensureToken();
+    await deleteDocument(`users/${this.uid}/customFoods/${id}`, token);
+  }
+
+  private buildRecipeDocument(input: RecipeInput, id: string, nowMicros: string, existing?: Record<string, any>): Record<string, any> { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const totalCal = input.ingredients.reduce((s, i) => s + i.calories, 0);
+    const totalProtein = input.ingredients.reduce((s, i) => s + i.protein, 0);
+    const totalCarbs = input.ingredients.reduce((s, i) => s + i.carbs, 0);
+    const totalFat = input.ingredients.reduce((s, i) => s + i.fat, 0);
+    const servings = input.servings;
+
+    // All numeric macro fields use string encoding (MacroFactor's format)
+    return {
+      id,
+      t: input.name,
+      b: 'Custom Recipe',
+      nt: input.description ?? existing?.nt ?? '',
+      li: input.sourceUrl ?? existing?.li ?? null,
+      l: existing?.l ?? null,
+      i: existing?.i ?? [],
+      st: input.steps ?? (Array.isArray(existing?.st) ? (existing.st as unknown[]).map(String) : []),
+      pt: String(input.prepTime ?? (existing?.pt != null ? Number(existing.pt) : 0)),
+      ct: String(input.cookTime ?? (existing?.ct != null ? Number(existing.ct) : 0)),
+      c: String(totalCal),
+      p: String(totalProtein),
+      e: String(totalCarbs),
+      f: String(totalFat),
+      g: '100.0',
+      w: String(100 / servings),
+      q: servings.toFixed(1),
+      s: 'serving',
+      u: 'serving',
+      y: '1.0',
+      k: 'n',
+      o: true,
+      fav: false,
+      d: false,
+      m: [],
+      ef: null,
+      dl: null,
+      v: null,
+      ca: existing?.ca ?? nowMicros,
+      ua: nowMicros,
+      consumed_at: existing?.consumed_at ?? nowMicros,
+      r: input.ingredients.map((ing, idx) => ({
+        id: ing.foodId ?? String(Number(nowMicros) + idx),
+        t: ing.name,
+        b: ing.brand ?? ing.name,
+        x: ing.imageId ?? null,
+        k: ing.foodId ? 't' : 'n',
+        c: String(ing.calories),
+        p: String(ing.protein),
+        e: String(ing.carbs),
+        f: String(ing.fat),
+        g: '1.0',
+        w: '1.0',
+        y: String((ing.quantity ?? 1).toFixed(1)),
+        q: '1.0',
+        s: ing.unit ?? 'serving',
+        u: ing.unit ?? 'serving',
+        d: true,
+        a: true,
+        o: false,
+        fav: false,
+        ef: null,
+        ca: nowMicros,
+        ua: nowMicros,
+        consumed_at: nowMicros,
+        m: [],
+      })),
+    };
+  }
+
+  async createRecipe(input: RecipeInput): Promise<Recipe> {
+    const token = await this.ensureToken();
+    const nowMicros = String(Date.now() * 1000);
+    const id = nowMicros;
+    const doc = this.buildRecipeDocument(input, id, nowMicros);
+    await patchDocument(`users/${this.uid}/customFoods/${id}`, doc, Object.keys(doc), token);
+    return this.parseRecipeDocument(doc);
+  }
+
+  async updateRecipe(id: string, input: RecipeInput): Promise<Recipe> {
+    const token = await this.ensureToken();
+    const nowMicros = String(Date.now() * 1000);
+    const existingDoc = await getDocument(`users/${this.uid}/customFoods/${id}`, token);
+    const existing = parseDocument(existingDoc);
+    if (!existing.o) throw new Error(`customFood ${id} is not a recipe`);
+    const doc = this.buildRecipeDocument(input, id, nowMicros, existing);
+    await patchDocument(`users/${this.uid}/customFoods/${id}`, doc, Object.keys(doc), token);
+    return this.parseRecipeDocument(doc);
+  }
+
   // -------------------------------------------------------------------------
   // Search
   // -------------------------------------------------------------------------

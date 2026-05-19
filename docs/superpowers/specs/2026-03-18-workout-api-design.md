@@ -54,7 +54,7 @@ Entity types in the database:
 #### Auth
 
 - Firebase project: `sbs-diet-app`
-- API key: `AIzaSyA17Uwy37irVEQSwz6PIyX3wnkHrDBeleA`
+- API key: `[REDACTED — MacroFactor/SBS public client key, visible in app bundle]`
 - Sign-in: `POST identitytoolkit.googleapis.com/v1/accounts:signInWithPassword`
 - Refresh: `POST securetoken.googleapis.com/v1/token`
 - Both `com.sbs.diet` and `com.sbs.train` bundle IDs work

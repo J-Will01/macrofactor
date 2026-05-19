@@ -164,3 +164,53 @@ export interface AuthTokens {
   refreshToken: string;
   expiresAt: number;
 }
+
+export interface RecipeIngredient {
+  foodId: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+}
+
+export interface Recipe {
+  id: string;
+  name: string;
+  description?: string;
+  sourceUrl?: string;
+  imageUrl?: string;
+  servings: number;
+  caloriesPerServing: number;
+  proteinPerServing: number;
+  carbsPerServing: number;
+  fatPerServing: number;
+  ingredients: RecipeIngredient[];
+  steps: string[];
+}
+
+export interface RecipeIngredientInput {
+  name: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  quantity?: number;
+  unit?: string;
+  brand?: string;
+  foodId?: string;
+  imageId?: string;
+}
+
+export interface RecipeInput {
+  name: string;
+  servings: number;
+  ingredients: RecipeIngredientInput[];
+  description?: string;
+  sourceUrl?: string;
+  steps?: string[];
+  prepTime?: number;
+  cookTime?: number;
+}
