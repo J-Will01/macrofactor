@@ -1,12 +1,16 @@
 ---
 name: macrofactor-mcp
-description: Use when reading or writing MacroFactor nutrition, food logs, weight, workout, or training program data. Triggers on meal tracking, macro counting, calorie logging, body weight, exercise logging, food search, or any MacroFactor interaction.
+description: Use when reading or writing MacroFactor nutrition, food logs, weight, workout, training program, or recipe data. Triggers on meal tracking, macro counting, calorie logging, body weight, exercise logging, food search, recipe creation/editing, grocery lists, or any MacroFactor interaction.
 mcp:
   macrofactor:
-    command: secrets
-    args: ['MACROFACTOR_USERNAME', 'MACROFACTOR_PASSWORD', '--', 'npx', '@sjawhar/macrofactor-mcp']
+    command: node
+    args: ['${SKILLS_DIR}/mcp/macrofactor/dist/mcp/stdio.js']
     env:
-      SOPS_AGE_KEY: '${SOPS_AGE_KEY}'
+      MACROFACTOR_USERNAME: '${MACROFACTOR_USERNAME}'
+      MACROFACTOR_PASSWORD: '${MACROFACTOR_PASSWORD}'
+      FIREBASE_WEB_API_KEY: '${FIREBASE_WEB_API_KEY}'
+      TYPESENSE_HOST: '${TYPESENSE_HOST}'
+      TYPESENSE_API_KEY: '${TYPESENSE_API_KEY}'
 ---
 
 # MacroFactor
@@ -39,6 +43,8 @@ For Firestore schema details, field encodings, and common gotchas, see `referenc
 | `get_training_programs` | List all training programs in the user's library                                          |
 | `search_foods`         | Search MacroFactor food database (USDA + branded)                                          |
 | `search_exercises`     | Search bundled exercise database by name                                                   |
+| `get_recipes`          | List all saved custom recipes with per-serving macros                                      |
+| `get_recipe`           | Full recipe detail (ingredients + steps) by ID                                             |
 
 ### Write
 
@@ -46,6 +52,12 @@ For Firestore schema details, field encodings, and common gotchas, see `referenc
 | ------------------------ | -------------------------------------------------------------- | ----------- |
 | `log_food`               | Search + log a food (`query` + `grams` or `amount`/`unit`)     | No          |
 | `log_manual_food`        | Log food with explicit macros (name, cal, protein, carbs, fat) | No          |
+| `log_recipe`             | Log one or more servings of a saved recipe to the diary        | No          |
+| `create_recipe`          | Create a new recipe from ingredients with pre-computed macros  | No          |
+| `edit_recipe`            | Targeted edit: scale/remove ingredients or rename without full re-spec | No   |
+| `update_recipe`          | Full replace of a recipe's ingredients, servings, and metadata | No          |
+| `delete_recipe`          | Permanently delete a saved recipe                              | Yes         |
+| `update_food_time`       | Correct the logged time of an existing food entry              | No          |
 | `log_weight`             | Log scale entry (accepts `lbs` or `kg`)                        | No          |
 | `log_workout`            | Create workout with exercises and sets                         | No          |
 | `log_exercise`           | Append exercises to existing workout                           | No          |
@@ -176,16 +188,34 @@ If the file doesn't exist, use sensible defaults and offer to create one when yo
 
 ## Setup
 
-The default frontmatter uses `secrets` for SOPS-encrypted credential injection. If you don't use SOPS, replace the MCP section in the frontmatter with direct env vars:
+This skill uses the **J-Will01/macrofactor** fork (a submodule of `skills` at `mcp/macrofactor/`), which includes the recipe tool suite on top of the upstream sjawhar/macrofactor server.
 
-```yaml
-mcp:
-  macrofactor:
-    command: npx
-    args: ['@sjawhar/macrofactor-mcp']
-    env:
-      MACROFACTOR_USERNAME: '${MACROFACTOR_USERNAME}'
-      MACROFACTOR_PASSWORD: '${MACROFACTOR_PASSWORD}'
+**After cloning skills or pulling submodule updates, build the server:**
+
+```bash
+cd ~/skills/mcp/macrofactor
+npm install
+npm run build:mcp   # outputs to dist/mcp/stdio.js
+```
+
+**Required env vars** (set in `~/.zshrc` or equivalent):
+
+```bash
+export MACROFACTOR_USERNAME="..."
+export MACROFACTOR_PASSWORD="..."
+export FIREBASE_WEB_API_KEY="..."
+export TYPESENSE_HOST="..."
+export TYPESENSE_API_KEY="..."
+```
+
+**Updating the submodule** (after pushing changes to J-Will01/macrofactor):
+
+```bash
+cd ~/skills
+git submodule update --remote mcp/macrofactor
+git add mcp/macrofactor
+git commit -m "chore: bump macrofactor submodule"
+git push
 ```
 
 ## Common Agent Mistakes (avoid these)
