@@ -137,10 +137,12 @@ All user data is stored under the `users/{uid}/` prefix.
 | `id`       | string  | Global food ID (if from search)                                                                                                                                                                                                                    |
 | `h` / `mi` | string  | Hour and minute of meal in user's **local time** (e.g., `"14"`, `"30"`). These are plain integers as strings — NOT zero-padded, NOT suffixed with `.0`. The app does not store timezone info; `h`/`mi` represent the wall-clock time the user ate. |
 | `k`        | string  | Source type ("search", "manual", etc.)                                                                                                                                                                                                             |
-| `d`        | boolean | True if deleted (soft delete)                                                                                                                                                                                                                      |
+| `d`        | boolean | App flag observed on visible entries as well as edited entries; do not interpret this as a delete marker.                                                                                                                                          |
 | `x`        | string  | Image ID / Barcode                                                                                                                                                                                                                                 |
 
 > **Computing true calories:** `(calories_raw * (userQty * (unitWeight ?? servingGrams)) / servingGrams)`
+>
+> **Deleting food entries:** remove the entry field from the day document. Setting `d: true` alone has been observed to leave entries visible in the MacroFactor app.
 
 ### Daily Nutrition Summaries
 

@@ -29,7 +29,7 @@ cli/
 | `search-food`           | `<query>`                            | Search food DB                                           |
 | `log-food`              | `{query, grams\|amount+unit}`        | Search + log food                                        |
 | `log-weight`            | `{kg\|lbs, date?}`                   | Log scale entry                                          |
-| `delete-food`           | `{date, entryId}`                    | Soft-delete food entry                                   |
+| `delete-food`           | `{date, entryId}`                    | Delete food entry from the day's log                     |
 | `update-food`           | `{date, entryId, quantity}`          | Update food qty                                          |
 | `log-workout`           | `{name, exercises[]}`                | Create workout                                           |
 | `log-exercise`          | `{workoutId, exercises[]}`           | Append to workout                                        |

@@ -61,6 +61,7 @@ client.ensureToken() → fetch(Firestore REST) → parseDocument() → typed ret
 - `multiplier()`: `(userQty * unitWeight) / servingGrams`
 - `calories()`, `protein()`, `carbs()`, `fat()`: raw value × multiplier
 - Field semantics: gram mode (`w=1, y=grams`) vs unit mode (`w=servingGrams, y=count`)
+- Do not treat food field `d` as deleted. It appears on visible entries; delete by removing the entry field from the day document.
 
 ## Anti-Patterns
 

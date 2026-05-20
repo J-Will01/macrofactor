@@ -1,4 +1,14 @@
-import type { Goals, ScaleEntry, NutritionSummary, StepEntry, SearchFoodResult, FoodServing, Recipe, RecipeIngredient, RecipeInput } from './types';
+import type {
+  Goals,
+  ScaleEntry,
+  NutritionSummary,
+  StepEntry,
+  SearchFoodResult,
+  FoodServing,
+  Recipe,
+  RecipeIngredient,
+  RecipeInput,
+} from './types';
 import { FoodEntry } from './types';
 import { signIn, refreshIdToken, getUserIdFromToken } from './auth';
 import {
@@ -466,7 +476,10 @@ export class MacroFactorClient {
           minute: val.mi as string | undefined,
           sourceType: val.k as string | undefined,
           foodId: val.id as string | undefined,
-          deleted: val.d === true,
+          // The app uses `d` on visible entries too, so it is not a reliable
+          // deleted marker. Deleted entries are removed from this document in
+          // practice; do not hide visible foods just because `d` is true.
+          deleted: false,
           imageId: val.x as string | undefined,
         })
       );
@@ -588,15 +601,13 @@ export class MacroFactorClient {
 
   async deleteFoodEntry(date: string, entryId: string): Promise<void> {
     const token = await this.ensureToken();
-    const nowMicros = String(Date.now() * 1000);
-    // Use updateFoodEntryFields (per-subfield mask) instead of patchFoodDocument
-    // (whole-entry replace) so we ADD the d flag without wiping the entry data.
-    await updateFoodEntryFields(`users/${this.uid}/food/${date}`, entryId, { d: bfv(true), ua: sfv(nowMicros) }, token);
+    // Empirical app check: setting the `d` flag leaves entries visible in
+    // MacroFactor. Removing the entry field is the observed delete behavior.
+    await removeFields(`users/${this.uid}/food/${date}`, [esc(entryId)], token);
   }
 
   async hardDeleteFoodEntry(date: string, entryId: string): Promise<void> {
-    const token = await this.ensureToken();
-    await removeFields(`users/${this.uid}/food/${date}`, [esc(entryId)], token);
+    await this.deleteFoodEntry(date, entryId);
   }
 
   async updateFoodEntry(date: string, entryId: string, qty: number): Promise<void> {
@@ -1184,13 +1195,15 @@ export class MacroFactorClient {
   // Recipes (stored in customFoods collection, o === true)
   // -------------------------------------------------------------------------
 
-  private parseRecipeDocument(d: Record<string, any>): Recipe { // eslint-disable-line @typescript-eslint/no-explicit-any
+  private parseRecipeDocument(d: Record<string, any>): Recipe {
+    // eslint-disable-line @typescript-eslint/no-explicit-any
     const totalServings = Number(d.q) || 1;
     const totalCal = Number(d.c) || 0;
     const totalProtein = Number(d.p) || 0;
     const totalCarbs = Number(d.e) || 0;
     const totalFat = Number(d.f) || 0;
-    const ingredients: RecipeIngredient[] = ((d.r ?? []) as Record<string, any>[]).map((ing) => ({ // eslint-disable-line @typescript-eslint/no-explicit-any
+    const ingredients: RecipeIngredient[] = ((d.r ?? []) as Record<string, any>[]).map((ing) => ({
+      // eslint-disable-line @typescript-eslint/no-explicit-any
       foodId: String(ing.id || ''),
       name: String(ing.t || ''),
       quantity: Number(ing.y) || 1,
@@ -1278,7 +1291,13 @@ export class MacroFactorClient {
     await deleteDocument(`users/${this.uid}/customFoods/${id}`, token);
   }
 
-  private buildRecipeDocument(input: RecipeInput, id: string, nowMicros: string, existing?: Record<string, any>): Record<string, any> { // eslint-disable-line @typescript-eslint/no-explicit-any
+  private buildRecipeDocument(
+    input: RecipeInput,
+    id: string,
+    nowMicros: string,
+    existing?: Record<string, any>
+  ): Record<string, any> {
+    // eslint-disable-line @typescript-eslint/no-explicit-any
     const totalCal = input.ingredients.reduce((s, i) => s + i.calories, 0);
     const totalProtein = input.ingredients.reduce((s, i) => s + i.protein, 0);
     const totalCarbs = input.ingredients.reduce((s, i) => s + i.carbs, 0);

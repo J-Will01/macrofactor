@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { LogTime, MacroFactorClient } from '../../lib/api/index.js';
+import { getFoodById, type LogTime, type MacroFactorClient } from '../../lib/api/index.js';
 import { syncDayDashboard } from '../../lib/api/sync.js';
 import { z } from 'zod';
 
@@ -54,7 +54,7 @@ function isGramServing(serving: FoodServing): boolean {
 export function registerFoodTools(server: McpServer, client: MacroFactorClient): void {
   server.tool(
     'get_food_log',
-    `Retrieve a day's food log entries and return them as JSON after filtering out deleted items. Use this when you need entry IDs or meal details before updates, copies, or deletes. Do not use this for macro totals over date ranges, because get_nutrition is a better fit for aggregate analysis. If you do not provide a date, the tool uses today's local date in YYYY-MM-DD format; see also update_food and copy_food_entries.`,
+    `Retrieve a day's visible food log entries and return them as JSON. Use this when you need entry IDs or meal details before updates, copies, or deletes. Do not use this for macro totals over date ranges, because get_nutrition is a better fit for aggregate analysis. If you do not provide a date, the tool uses today's local date in YYYY-MM-DD format; see also update_food and copy_food_entries.`,
     {
       date: z
         .string()
@@ -71,7 +71,7 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
 
   server.tool(
     'search_foods',
-    `Search the MacroFactor food database by text query and return matching foods and serving options. Use this before log_food when you need a candidate food and serving metadata for precise logging. Do not use this for custom manual foods with direct macro numbers; use log_manual_food for that path. If results are ambiguous, refine the query string and run the search again before logging.`,
+    `Search the MacroFactor food database by text query and return matching foods, foodId values, and serving options. Use this before log_food when you need to choose a precise catalog food and serving. Do not use this for custom manual foods with direct macro numbers; use log_manual_food for that path. If results are ambiguous, refine the query or pass the chosen foodId from this result into log_food.`,
     { query: z.string().min(1) },
     { readOnlyHint: true },
     async ({ query }) => {
@@ -82,12 +82,15 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
 
   server.tool(
     'log_food',
-    `Search for a food by query, select the first match, resolve a serving, and log it to the food diary using LogTime fields. Use this for standard catalog foods where you want search-driven logging in one step. Do not use this when the food is not in search results or you already have direct macro values; use log_manual_food in those cases. If no serving preference is provided, this tool defaults to a gram-style serving and quantity 100; related tools include search_foods and update_food.`,
+    `Log a catalog food to the food diary using either a foodId from search_foods or a query fallback that selects the first search result. Prefer foodId for precision after search_foods, especially for branded foods or ambiguous names. Use grams for weight-based logging, amount plus unit for serving-name logging, or servingIndex plus quantity when you want an exact serving option from search_foods. Do not use this for custom macro-only foods; use log_manual_food instead. If no serving preference is provided, this tool defaults to 100 grams.`,
     {
-      query: z.string().min(1),
+      foodId: z.string().min(1).optional(),
+      query: z.string().min(1).optional(),
       grams: z.number().positive().optional(),
       amount: z.number().positive().optional(),
       unit: z.string().min(1).optional(),
+      servingIndex: z.number().int().min(0).optional(),
+      quantity: z.number().positive().optional(),
       date: z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -96,18 +99,33 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
       minute: z.number().int().min(0).max(59).optional(),
     },
     { destructiveHint: false },
-    async ({ query, grams, amount, unit, date, hour, minute }) => {
-      const results = await client.searchFoods(query);
-      const food = results[0];
+    async ({ foodId, query, grams, amount, unit, servingIndex, quantity: servingQuantity, date, hour, minute }) => {
+      if (!foodId && !query) {
+        throw new Error('log_food requires either "foodId" from search_foods or a non-empty "query"');
+      }
+      const food = foodId ? await getFoodById(foodId) : (await client.searchFoods(query ?? ''))[0];
       if (!food) {
-        throw new Error(`No food results found for query "${query}"`);
+        throw new Error(foodId ? `Food "${foodId}" not found` : `No food results found for query "${query ?? ''}"`);
       }
 
       let serving = findServing(food.servings, 'g') ?? food.servings[0];
       let quantity = grams ?? 100;
       let gramMode = true;
 
-      if (amount != null && unit) {
+      if (servingIndex != null) {
+        const indexedServing = food.servings[servingIndex];
+        if (!indexedServing) {
+          throw new Error(
+            `servingIndex ${servingIndex} out of range for "${food.name}" (${food.servings.length} servings)`
+          );
+        }
+        if (servingQuantity == null) {
+          throw new Error('log_food with servingIndex requires positive "quantity"');
+        }
+        serving = indexedServing;
+        quantity = servingQuantity;
+        gramMode = isGramServing(serving);
+      } else if (amount != null && unit) {
         const matched = findServing(food.servings, unit);
         if (!matched) {
           const available = food.servings.map((s) => s.description).join(', ');
@@ -163,7 +181,11 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
     { destructiveHint: false },
     async ({ name, calories, protein, carbs, fat, imageId, date, hour, minute }) => {
       const logTime = parseLogTime({ date, hour, minute });
-      await client.logFood(logTime, name, calories, protein, carbs, fat, imageId);
+      if (imageId === undefined) {
+        await client.logFood(logTime, name, calories, protein, carbs, fat);
+      } else {
+        await client.logFood(logTime, name, calories, protein, carbs, fat, imageId);
+      }
       await syncDayDashboard(client, logTime.date);
       return {
         content: [
@@ -182,7 +204,7 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
 
   server.tool(
     'update_food',
-    `Update the quantity for an existing food entry on a specific date and return an update confirmation JSON payload. Use this when you already know the target entry ID and need to correct quantity without creating duplicate entries. Do not use this to change to a different food item or to remove entries; use delete_food/hard_delete_food for removal workflows. Prerequisite: call get_food_log first if you need to discover entry IDs for that day.`,
+    `Update the quantity for an existing food entry on a specific date and return an update confirmation JSON payload. Use this when you already know the target entry ID and need to correct quantity without creating duplicate entries. Do not use this to change to a different food item or to remove entries; use delete_food for removal workflows. Prerequisite: call get_food_log first if you need to discover entry IDs for that day.`,
     {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       entryId: z.string().min(1),
@@ -224,7 +246,7 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
 
   server.tool(
     'delete_food',
-    `Soft-delete a food entry by setting its deleted flag and return a deletion confirmation object. Use this when you want the standard app-consistent deletion behavior that preserves underlying history records. Do not use this for permanent field removal from Firestore, because hard_delete_food is the irreversible path. Prerequisite: obtain a valid entryId via get_food_log before calling this tool; see also hard_delete_food for permanent deletion.`,
+    `Delete a food entry by removing it from the day's food log and return a deletion confirmation object. Use this for normal food log corrections after you have identified the exact entry ID. Do not rely on the underlying app's d flag as a soft-delete marker, because visible entries can also have d=true. Prerequisite: obtain a valid entryId via get_food_log before calling this tool.`,
     {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       entryId: z.string().min(1),
@@ -239,24 +261,8 @@ export function registerFoodTools(server: McpServer, client: MacroFactorClient):
   );
 
   server.tool(
-    'hard_delete_food',
-    `Permanently remove a food entry field from the day document and return a hard-delete confirmation payload. Use this only when you explicitly need irreversible cleanup behavior and understand the data-loss implications. Do not use this for normal day-to-day corrections where soft delete is safer and closer to app behavior; use delete_food instead. Prerequisite: get_food_log to identify the exact entryId, and consider update_food when the goal is quantity correction.`,
-    {
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      entryId: z.string().min(1),
-    },
-    { destructiveHint: true },
-    async ({ date, entryId }) => {
-      await client.hardDeleteFoodEntry(date, entryId);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ status: 'hard-deleted', date, entryId }, null, 2) }],
-      };
-    }
-  );
-
-  server.tool(
     'copy_food_entries',
-    `Copy one or more food entries from a source date to a target date and return a summary of copied count. Use this for meal cloning workflows where you want to reuse prior entries without re-logging each food. Do not use this for a full day nutrition analysis or for deleting entries; use get_nutrition and delete_food respectively. Prerequisite: call get_food_log on the source date if you need entry IDs; when entryIds are omitted, all non-deleted entries from the source date are copied.`,
+    `Copy one or more visible food entries from a source date to a target date and return a summary of copied count. Use this for meal cloning workflows where you want to reuse prior entries without re-logging each food. Do not use this for a full day nutrition analysis or for deleting entries; use get_nutrition and delete_food respectively. Prerequisite: call get_food_log on the source date if you need entry IDs; when entryIds are omitted, all visible entries from the source date are copied.`,
     {
       fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
