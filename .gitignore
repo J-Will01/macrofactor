@@ -8,7 +8,12 @@ node_modules/
 .wrangler
 /.svelte-kit
 /build
-/dist
+/dist/*
+!/dist/mcp/
+!/dist/mcp/*.js
+!/dist/mcp/*.js.map
+!/dist/chunk-*.js
+!/dist/chunk-*.js.map
 
 # OS
 .DS_Store
