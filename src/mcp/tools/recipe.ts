@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { MacroFactorClient } from '../../lib/api/index.js';
+import type { MacroFactorClient, RecipeIngredientInput } from '../../lib/api/index.js';
 import { syncDayDashboard } from '../../lib/api/sync.js';
 import { z } from 'zod';
 
@@ -117,7 +117,16 @@ export function registerRecipeTools(server: McpServer, client: MacroFactorClient
     },
     { destructiveHint: false },
     async ({ name, servings, ingredients, description, sourceUrl, steps, prepTime, cookTime }) => {
-      const recipe = await client.createRecipe({ name, servings, ingredients, description, sourceUrl, steps, prepTime, cookTime });
+      const recipe = await client.createRecipe({
+        name,
+        servings,
+        ingredients,
+        description,
+        sourceUrl,
+        steps,
+        prepTime,
+        cookTime,
+      });
       return { content: [{ type: 'text' as const, text: JSON.stringify(recipe, null, 2) }] };
     }
   );
@@ -138,7 +147,16 @@ export function registerRecipeTools(server: McpServer, client: MacroFactorClient
     },
     { destructiveHint: false },
     async ({ recipeId, name, servings, ingredients, description, sourceUrl, steps, prepTime, cookTime }) => {
-      const recipe = await client.updateRecipe(recipeId, { name, servings, ingredients, description, sourceUrl, steps, prepTime, cookTime });
+      const recipe = await client.updateRecipe(recipeId, {
+        name,
+        servings,
+        ingredients,
+        description,
+        sourceUrl,
+        steps,
+        prepTime,
+        cookTime,
+      });
       return { content: [{ type: 'text' as const, text: JSON.stringify(recipe, null, 2) }] };
     }
   );
@@ -146,7 +164,11 @@ export function registerRecipeTools(server: McpServer, client: MacroFactorClient
   const ingredientEditSchema = z.object({
     ingredientName: z.string().min(1).describe('Case-insensitive name match against existing ingredient'),
     action: z.enum(['scale', 'remove']),
-    newQuantity: z.number().positive().optional().describe('New quantity; macros are scaled proportionally from current values'),
+    newQuantity: z
+      .number()
+      .positive()
+      .optional()
+      .describe('New quantity; macros are scaled proportionally from current values'),
     newUnit: z.string().optional(),
     calories: z.number().min(0).optional().describe('Override scaled calories instead of computing proportionally'),
     protein: z.number().min(0).optional(),
@@ -166,15 +188,32 @@ export function registerRecipeTools(server: McpServer, client: MacroFactorClient
       steps: z.array(z.string()).optional().describe('Replace all steps; omit to keep existing'),
       prepTime: z.number().int().min(0).optional(),
       cookTime: z.number().int().min(0).optional(),
-      ingredientEdits: z.array(ingredientEditSchema).optional().describe('Scale or remove existing ingredients by name'),
-      addIngredients: z.array(ingredientSchema).optional().describe('New ingredients to add (provide full batch macros)'),
+      ingredientEdits: z
+        .array(ingredientEditSchema)
+        .optional()
+        .describe('Scale or remove existing ingredients by name'),
+      addIngredients: z
+        .array(ingredientSchema)
+        .optional()
+        .describe('New ingredients to add (provide full batch macros)'),
     },
     { destructiveHint: false },
-    async ({ recipeId, name, servings, description, sourceUrl, steps, prepTime, cookTime, ingredientEdits, addIngredients }) => {
+    async ({
+      recipeId,
+      name,
+      servings,
+      description,
+      sourceUrl,
+      steps,
+      prepTime,
+      cookTime,
+      ingredientEdits,
+      addIngredients,
+    }) => {
       const existing = await client.getRecipe(recipeId);
       if (!existing) throw new Error(`Recipe ${recipeId} not found`);
 
-      let ingredients = existing.ingredients.map((ing) => ({
+      let ingredients: RecipeIngredientInput[] = existing.ingredients.map((ing) => ({
         name: ing.name,
         calories: ing.calories,
         protein: ing.protein,
@@ -188,7 +227,10 @@ export function registerRecipeTools(server: McpServer, client: MacroFactorClient
       for (const edit of ingredientEdits ?? []) {
         const lower = edit.ingredientName.toLowerCase();
         const idx = ingredients.findIndex((i) => i.name.toLowerCase().includes(lower));
-        if (idx === -1) throw new Error(`Ingredient not found: "${edit.ingredientName}". Existing: ${ingredients.map((i) => i.name).join(', ')}`);
+        if (idx === -1)
+          throw new Error(
+            `Ingredient not found: "${edit.ingredientName}". Existing: ${ingredients.map((i) => i.name).join(', ')}`
+          );
 
         if (edit.action === 'remove') {
           ingredients.splice(idx, 1);

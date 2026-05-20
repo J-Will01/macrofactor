@@ -24,7 +24,7 @@ export function registerWeightTools(server: McpServer, client: MacroFactorClient
 
   server.tool(
     'log_weight',
-    `Log a bodyweight entry using either kilograms or pounds and return a confirmation JSON payload. Use this for new daily scale entries and optional body-fat values; pounds are converted to kilograms internally before writing. Do not use this to edit or remove existing entries, because this tool only writes a value for a day and delete_weight handles removal. If you provide lbs and kg together, kg takes precedence; if date is omitted, today's local date is used.`,
+    `Log a bodyweight entry using either kilograms or pounds and return a confirmation JSON payload. Use this for new daily scale entries and optional body-fat values; pounds are converted to kilograms internally before writing. Do not use this to remove existing entries, because delete_weight handles removal. Provide exactly one of kg or lbs; if date is omitted, today's local date is used.`,
     {
       lbs: z.number().positive().optional(),
       kg: z.number().positive().optional(),
@@ -36,8 +36,8 @@ export function registerWeightTools(server: McpServer, client: MacroFactorClient
     },
     { destructiveHint: false },
     async ({ lbs, kg, date, bodyFat }) => {
-      if (kg == null && lbs == null) {
-        throw new Error('log_weight requires either kg or lbs');
+      if ((kg == null && lbs == null) || (kg != null && lbs != null)) {
+        throw new Error('log_weight requires exactly one of kg or lbs');
       }
 
       const weightKg = kg ?? Number(lbs) / 2.2046226218;

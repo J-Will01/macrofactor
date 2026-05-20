@@ -101,6 +101,7 @@ export function registerProfileTools(server: McpServer, client: MacroFactorClien
     'get_profile',
     `Retrieve the user's MacroFactor profile and account preferences. Use this to understand the user's settings (units, timezone, etc.) before performing other operations. Returns profile data as JSON. See also: get_goals for macro targets.`,
     {},
+    { readOnlyHint: true },
     async () => {
       const profile = await client.getProfile();
       return { content: [{ type: 'text' as const, text: JSON.stringify(profile, null, 2) }] };

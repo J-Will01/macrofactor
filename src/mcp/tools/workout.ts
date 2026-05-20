@@ -352,10 +352,18 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'get_training_program',
-    `Return the active training program definition for the user, including cycle metadata and day structure. Use this when you need to understand planned training context rather than completed history. Do not use this for the next scheduled day alone, because get_next_workout gives the direct next-day answer. If no active flag exists, this tool falls back to the first available program in the list.`,
-    {},
+    `Return a full training program definition, including cycle metadata and day structure. Pass id to fetch a specific program discovered from get_training_programs; omit id to return the active program, falling back to the first available program if no active flag exists. Use this when you need planned training structure rather than completed workout history. Do not use this for the next scheduled day alone, because get_next_workout gives the direct next-day answer.`,
+    { id: z.string().min(1).optional() },
     { readOnlyHint: true },
-    async () => {
+    async ({ id }) => {
+      if (id) {
+        const program = await client.getTrainingProgram(id);
+        if (!program) {
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ status: 'not_found', id }, null, 2) }] };
+        }
+        return { content: [{ type: 'text' as const, text: JSON.stringify(program, null, 2) }] };
+      }
+
       const programs = await client.getTrainingPrograms();
       const active = programs.find((program) => program.isActive) || programs[0] || null;
       return { content: [{ type: 'text' as const, text: JSON.stringify(active, null, 2) }] };
@@ -413,6 +421,9 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
     async ({ name, gym, startTime, durationMinutes, workoutSource, exercises }) => {
       const [gyms, customExercises] = await Promise.all([client.getGymProfiles(), client.getCustomExercises()]);
       const selectedGym = gym ? gyms.find((candidate) => candidate.name.toLowerCase() === gym.toLowerCase()) : gyms[0];
+      if (gym && !selectedGym) {
+        throw new Error(`Gym "${gym}" not found. Available: ${gyms.map((g) => g.name).join(', ')}`);
+      }
       const resolvedWorkoutSource = coerceWorkoutSource(workoutSource);
       const targetsByExerciseId = await getProgramTargetsByExerciseId(client, resolvedWorkoutSource);
       // Clamp cycleIndex to 999 for post-program (deload) workouts
@@ -537,7 +548,7 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'update_workout',
-    `Update top-level workout metadata fields (such as name or durationMinutes) without rebuilding exercise blocks. Use this for lightweight edits to existing sessions after they have been created. Do not use this for adding or removing exercises, because log_exercise and remove_exercise handle block-level changes. Prerequisite: provide the workout ID and at least one mutable field to update; get_workouts can be used to locate IDs first.`,
+    `Update top-level workout metadata fields (such as name or durationMinutes) without rebuilding exercise blocks. Use this for lightweight edits to existing sessions after they have been created. Do not use this for adding/removing exercises or correcting set values, because log_exercise, remove_exercise, and update_workout_set handle block-level changes. Prerequisite: provide the workout ID and at least one mutable field to update; get_workouts can be used to locate IDs first.`,
     {
       id: z.string().min(1),
       name: z.string().optional(),
@@ -574,7 +585,7 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'remove_exercise',
-    `Remove all blocks containing a target exercise ID from an existing workout and write the modified block list back. Use this when an exercise was logged in the wrong workout and needs to be removed cleanly. Do not use this to tweak set values inside an exercise block, because that requires full raw workout editing via get_workout/getRawWorkout patterns outside this tool. Prerequisites: know workoutId and exerciseId first, typically by calling get_workout to inspect the current block structure.`,
+    `Remove a target exercise ID from an existing workout and write the modified block list back. If the target exercise is the only exercise in a block, that block is removed; if it is part of a superset block, the other exercises in the block are preserved. Use this when an exercise was logged in the wrong workout and needs to be removed cleanly. Do not use this to tweak set values inside an exercise block; use update_workout_set instead. Prerequisites: know workoutId and exerciseId first, typically by calling get_workout to inspect the current block structure.`,
     {
       workoutId: z.string().min(1),
       exerciseId: z.string().min(1),
@@ -583,10 +594,18 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
     async ({ workoutId, exerciseId }) => {
       const raw = await client.getRawWorkout(workoutId);
       const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
-      const filtered = blocks.filter((block: any) => {
-        const exs = Array.isArray(block.exercises) ? block.exercises : [];
-        return !exs.some((exercise: any) => exercise.exerciseId === exerciseId);
-      });
+      let exercisesRemoved = 0;
+      const filtered = blocks
+        .map((block: any) => {
+          const exs = Array.isArray(block.exercises) ? block.exercises : [];
+          const kept = exs.filter((exercise: any) => exercise.exerciseId !== exerciseId);
+          exercisesRemoved += exs.length - kept.length;
+          return { ...block, exercises: kept };
+        })
+        .filter((block: any) => {
+          const exs = Array.isArray(block.exercises) ? block.exercises : [];
+          return exs.length > 0;
+        });
 
       await client.updateRawWorkout(workoutId, { blocks: filtered }, ['blocks']);
       return {
@@ -594,7 +613,101 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
           {
             type: 'text' as const,
             text: JSON.stringify(
-              { status: 'removed', workoutId, exerciseId, blocksRemoved: blocks.length - filtered.length },
+              {
+                status: 'removed',
+                workoutId,
+                exerciseId,
+                exercisesRemoved,
+                blocksRemoved: blocks.length - filtered.length,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'update_workout_set',
+    `Update one logged set inside an existing workout while preserving the rest of the workout document. Use this to correct reps, weight, RIR, rest time, set type, or skipped status for a set that was logged incorrectly. Prerequisite: call get_workout first, then pass the workout id, the exercise instance id from blocks[].exercises[].id, and a zero-based setIndex from that exercise's sets array. Do not use this to add or remove sets or exercises; use log_exercise or remove_exercise for those workflows.`,
+    {
+      workoutId: z.string().min(1),
+      exerciseInstanceId: z.string().min(1),
+      setIndex: z.number().int().min(0),
+      reps: z.number().min(0).optional(),
+      lbs: z.number().min(0).optional(),
+      kg: z.number().min(0).optional(),
+      rir: z.number().min(0).optional(),
+      rest: z.number().min(0).optional(),
+      type: z.enum(['standard', 'warmUp', 'failure']).optional(),
+      isSkipped: z.boolean().optional(),
+    },
+    { destructiveHint: false },
+    async ({ workoutId, exerciseInstanceId, setIndex, reps, lbs, kg, rir, rest, type, isSkipped }) => {
+      if (lbs != null && kg != null) {
+        throw new Error('update_workout_set accepts only one of lbs or kg');
+      }
+      if (
+        reps == null &&
+        lbs == null &&
+        kg == null &&
+        rir == null &&
+        rest == null &&
+        type == null &&
+        isSkipped == null
+      ) {
+        throw new Error('update_workout_set requires at least one field to change');
+      }
+
+      const raw = await client.getRawWorkout(workoutId);
+      const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
+      let targetSet: any | null = null;
+      let resolvedExerciseId: string | null = null;
+
+      for (const block of blocks) {
+        const exercises = Array.isArray(block.exercises) ? block.exercises : [];
+        const exercise = exercises.find((candidate: any) => candidate.id === exerciseInstanceId);
+        if (!exercise) continue;
+        const sets = Array.isArray(exercise.sets) ? exercise.sets : [];
+        targetSet = sets[setIndex] ?? null;
+        resolvedExerciseId = exercise.exerciseId ?? null;
+        break;
+      }
+
+      if (!targetSet) {
+        throw new Error(
+          `Set ${setIndex} for exercise instance "${exerciseInstanceId}" not found in workout "${workoutId}"`
+        );
+      }
+
+      if (type != null) {
+        targetSet.setType = type;
+      }
+      targetSet.log ??= {};
+      targetSet.log.value ??= {};
+      if (reps != null) targetSet.log.value.fullReps = reps;
+      if (kg != null) targetSet.log.value.weight = kg;
+      if (lbs != null) targetSet.log.value.weight = lbs / 2.2046226218;
+      if (rir != null) targetSet.log.value.rir = rir;
+      if (rest != null) targetSet.log.value.restTimer = rest * 1_000_000;
+      if (isSkipped != null) targetSet.log.value.isSkipped = isSkipped;
+
+      await client.updateRawWorkout(workoutId, { blocks }, ['blocks']);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                status: 'updated',
+                workoutId,
+                exerciseInstanceId,
+                exerciseId: resolvedExerciseId,
+                setIndex,
+                fields: { reps, kg: kg ?? (lbs != null ? lbs / 2.2046226218 : undefined), rir, rest, type, isSkipped },
+              },
               null,
               2
             ),
@@ -638,7 +751,7 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'create_custom_workout',
-    `Queue up a workout for the user to do later by creating a custom workout plan in the app's library. Each block represents a superset (multiple exercises in one block = grouped). Sets are TARGETS (rep ranges + optional RIR + optional prescribed weight), not logged values — the user fills in actual reps/weight when they execute the plan. Use this when designing workouts the user will perform later. Do not use this to log a completed workout (use log_workout for that). The plan id is auto-added to the workout library so it appears in the app's library tab.`,
+    `Queue up a workout for the user to do later by creating a custom workout plan in the app's library. Provide either exercises for a flat plan or blocks for grouped/superset work; each block represents a superset when it contains multiple exercises. Sets are TARGETS (rep ranges + optional RIR + optional prescribed weight), not logged values — the user fills in actual reps/weight when they execute the plan. Use this when designing workouts the user will perform later. Do not use this to log a completed workout (use log_workout for that). The plan id is auto-added to the workout library so it appears in the app's library tab.`,
     {
       name: z.string().min(1),
       gym: z.string().optional(),
@@ -700,6 +813,9 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
       if (blocks != null && exercises != null) {
         throw new Error('Provide either "exercises" (flat) or "blocks" (grouped), not both');
       }
+      if (blocks == null && exercises == null) {
+        throw new Error('Provide either "exercises" (flat) or "blocks" (grouped)');
+      }
 
       const planBlocks: PlanBlock[] = [];
       const summaries: unknown[] = [];
@@ -742,7 +858,7 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'update_custom_workout',
-    `Replace the contents of an existing custom workout plan. Pass the full plan — the entire workoutPlan field is overwritten. Use this to revise a queued workout before the user does it. Do not use this for partial edits to a single set; the entire plan must be rebuilt.`,
+    `Replace the contents of an existing custom workout plan. Pass the full plan using either exercises for a flat plan or blocks for grouped/superset work — the entire workoutPlan field is overwritten. Use this to revise a queued workout before the user does it. Do not use this for partial edits to a single set; the entire plan must be rebuilt.`,
     {
       id: z.string().min(1),
       name: z.string().min(1),
@@ -804,6 +920,9 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
       }
       if (blocks != null && exercises != null) {
         throw new Error('Provide either "exercises" (flat) or "blocks" (grouped), not both');
+      }
+      if (blocks == null && exercises == null) {
+        throw new Error('Provide either "exercises" (flat) or "blocks" (grouped)');
       }
 
       const planBlocks: PlanBlock[] = [];
@@ -1045,7 +1164,7 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'get_training_programs',
-    `List all training programs in the user's library. Returns id, name, cycle count, periodization, and isActive flag for each. Use this to discover available programs before reading a specific one with get_training_program or activating one with activate_program.`,
+    `List all training programs in the user's library. Returns id, name, cycle count, periodization, day counts, and isActive flag for each, but not full day/set detail. Use this to discover available program IDs before reading a specific one with get_training_program or changing the active program with activate_program.`,
     {},
     { readOnlyHint: true },
     async () => {
@@ -1162,12 +1281,20 @@ export function registerWorkoutTools(server: McpServer, client: MacroFactorClien
 
   server.tool(
     'activate_program',
-    `Make a program the active program. Sets profiles/workout.activeProgramId. The active program is what get_next_workout uses and what the app's home screen highlights. Pass the program id from get_training_programs.`,
+    `Make an existing program the active program. Validates the id from get_training_programs, then sets profiles/workout.activeProgramId. The active program is what get_next_workout uses and what the app's home screen highlights. Use deactivate_program when the user wants no active program.`,
     { id: z.string().min(1) },
     { destructiveHint: false },
     async ({ id }) => {
+      const program = await client.getTrainingProgram(id);
+      if (!program) {
+        throw new Error(`Training program "${id}" not found`);
+      }
       await client.setActiveProgram(id);
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ status: 'activated', id }, null, 2) }] };
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify({ status: 'activated', id, name: program.name }, null, 2) },
+        ],
+      };
     }
   );
 
