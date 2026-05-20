@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     'mcp/stdio': 'src/mcp/stdio.ts',
     'mcp/http': 'src/mcp/http.ts',
+    'mcp/connector-proxy': 'src/mcp/connector-proxy.ts',
   },
   format: ['esm'],
   target: 'node22',

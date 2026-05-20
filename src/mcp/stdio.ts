@@ -1,6 +1,9 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { MacroFactorClient } from '../lib/api/index.js';
+import { loadEnvFile } from './env.js';
 import { createServer } from './server.js';
+
+loadEnvFile();
 
 async function main() {
   const username = process.env.MACROFACTOR_USERNAME;
